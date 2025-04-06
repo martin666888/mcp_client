@@ -1,0 +1,4 @@
+# OpenAI API 配置
+api_key = "your-openai-api-key-here"  # 替换为您的 OpenAI API 密钥
+api_base = "https://api.openai.com/v1"  # OpenAI API 基础 URL
+model = "gpt-4-turbo"  # 使用的模型名称，可根据需要更改
