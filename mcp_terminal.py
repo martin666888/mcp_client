@@ -23,6 +23,7 @@ from rich.table import Table
 from rich.syntax import Syntax
 from rich import box
 from contextlib import AsyncExitStack
+import re
 
 # MCP相关导入
 from mcp import ClientSession, StdioServerParameters
@@ -191,20 +192,33 @@ class MultiMCPClient:
     async def connect_to_server(self, server_identifier: str, server_name: str = None) -> str:
         """连接到MCP服务器，支持npm包形式和脚本文件"""
         # 如果未提供服务器名称，使用标识符作为名称
-        server_name = server_name or server_identifier
+        if not server_name:
+            # 为多词命令创建一个简单的名称
+            if ' ' in server_identifier:
+                parts = server_identifier.split()
+                if parts[0] in ["uvx", "npx"]:
+                    # 如果是 uvx mcp-server-fetch 这样的多词命令
+                    # 使用最后一个部分作为服务器名称
+                    server_name = parts[-1].split('/')[-1]
+                else:
+                    server_name = server_identifier
+            else:
+                server_name = server_identifier
+        
+        print(f"尝试连接到服务器: {server_identifier}, 名称: {server_name}")
         
         # 检查是否是npx或uvx命令格式
-        if server_identifier.startswith('npx ') or server_identifier.startswith('uvx '):
-            args = server_identifier.split()
-            # 如果第一个参数不是npx/uvx，则添加对应的前缀
-            if args[0] not in ["npx", "uvx"]:
-                args = ["uvx" if "uvx" in args[0] else "npx"] + args
-                
-            print(f"执行命令: {' '.join(args)}")
+        args = server_identifier.split()
+        if args and args[0] in ['npx', 'uvx']:
+            # 直接拆分命令和参数
+            command = args[0]  # uvx 或 npx
+            command_args = args[1:] if len(args) > 1 else []
+            
+            print(f"执行命令: {command} {' '.join(command_args)}")
             
             server_params = StdioServerParameters(
-                command=args[0],
-                args=args[1:],
+                command=command,
+                args=command_args,
                 env=None
             )
         else:
@@ -634,12 +648,48 @@ def connect(
     
     # 如果没有使用 --from-config 选项，则需要 server 参数
     if server is None:
-        console.print("[bold red]错误:[/bold red] 必须提供服务器标识符或使用 --from-config 选项")
+        console.print("[bold red]错误:[/bold red] 需要指定服务器ID")
         return
+    
+    # 输出调试信息
+    console.print(f"[dim]收到server参数: '{server}'[/dim]")
+
+    # 初始化server_args
+    server_args = []
+    
+    # 命令行模式下的多参数命令处理
+    # 处理环境变量（如 TAVILY_API_KEY=xxx uvx mcp-server-fetch）
+    env_vars = {}
+    env_var_pattern = re.compile(r'^([A-Za-z0-9_]+)=([^\s]+)')  # 匹配环境变量赋值
+    
+    if ' ' in server:
+        parts = server.split()
+        clean_parts = []
+        
+        for part in parts:
+            env_match = env_var_pattern.match(part)
+            if env_match:
+                env_vars[env_match.group(1)] = env_match.group(2)
+            else:
+                clean_parts.append(part)
+        
+        # 如果有环境变量，重构server为不包含环境变量的命令
+        if env_vars:
+            server = " ".join(clean_parts)
+            console.print(f"[dim]检测到环境变量: {list(env_vars.keys())}[/dim]")
+    
+    # 特殊处理MCP服务器命令
+    if ' ' in server:
+        # 原始命令中如果有空格，则是一个包含空格的完整命令，例如 "uvx mcp-server-fetch"
+        # 仅记录检测到的复合命令
+        console.print(f"[dim]检测到复合命令: '{server}'[/dim]")
+        
+    # 将检测到的环境变量添加到环境中
+    os.environ.update(env_vars)
     
     # 原有的连接逻辑
     console.print(Panel(
-        f"[bold]连接到MCP服务器[/bold]: {server}",
+        f"[bold]连接到MCP服务器[/bold]: {server} {' '.join(server_args) if server_args else ''}",
         border_style="blue",
         expand=False
     ))
@@ -707,10 +757,15 @@ def chat(
         "- [bold]!mcp[/bold]: 切换到MCP服务器模式\n"
         "- [bold]!use <服务器名>[/bold]: 切换到指定服务器\n"
         "- [bold]!disconnect <服务器名>[/bold]: 断开指定服务器\n"
-        "- [bold]!connect <服务器标识符> [服务器名称][/bold]: 连接到新服务器\n"
+        "- [bold]!connect <服务器标识符> [--name <服务器名称>][/bold]: 直接连接服务器\n"
+        "  例如: [bold]!connect uvx mcp-server-fetch[/bold] 或 [bold]!connect npx -y @modelcontextprotocol/server-openai[/bold]\n"
+        "  也可设置环境变量: [bold]!connect TAVILY_API_KEY=your-key uvx mcp-server-fetch[/bold]\n"
+        "- [bold]!connect --from-config/-f <服务器ID> [--config/-c <配置文件路径>][/bold]: 从配置文件连接服务器\n"
         "- [bold]!history [--count/-c <数量>] [--set/-s <最大数量>][/bold]: 管理对话历史记录\n"
         "- [bold]!clear[/bold]: 清除对话历史记录\n"
-        "\n注意: 所有命令都以感叹号(!)\u5f00头，其他输入将被视为发送给模型的对话",
+        "\n注意: \n"
+        "1. 所有命令都以感叹号(!)开头，其他输入将被视为发送给模型的对话\n"
+        "2. 可以使用 config.json 文件来配置服务器，也可以直接通过命令行连接",
         title="可用命令列表",
         border_style="green"
     )
@@ -781,13 +836,15 @@ def chat(
                             "- [bold]!mcp[/bold]: 切换到MCP服务器模式\n"
                             "- [bold]!use <服务器名>[/bold]: 切换到指定服务器\n"
                             "- [bold]!disconnect <服务器名>[/bold]: 断开指定服务器\n"
-                            "- [bold]!connect <服务器标识符> [服务器名称][/bold]: 连接到新服务器\n"
+                            "- [bold]!connect <服务器标识符> [--name <服务器名称>][/bold]: 直接连接服务器\n"
+                            "  例如: [bold]!connect uvx mcp-server-fetch[/bold] 或 [bold]!connect npx -y @modelcontextprotocol/server-openai[/bold]\n"
+                            "  也可设置环境变量: [bold]!connect TAVILY_API_KEY=your-key uvx mcp-server-fetch[/bold]\n"
                             "- [bold]!connect --from-config/-f <服务器ID> [--config/-c <配置文件路径>][/bold]: 从配置文件连接服务器\n"
                             "- [bold]!history [--count/-c <数量>] [--set/-s <最大数量>][/bold]: 管理对话历史记录\n"
                             "- [bold]!clear[/bold]: 清除对话历史记录\n"
                             "\n注意: \n"
                             "1. 所有命令都以感叹号(!)开头，其他输入将被视为发送给模型的对话\n"
-                            "2. 可以使用 config.json 文件来配置服务器，包括命令、参数和环境变量",
+                            "2. 可以使用 config.json 文件来配置服务器，也可以直接通过命令行连接",
                             title="帮助",
                             border_style="green"
                         )
@@ -864,15 +921,12 @@ def chat(
                         
                         if history_to_show:
                             for i, (user_msg, assistant_msg) in enumerate(history_to_show):
-                                console.print(f"\n[bold blue]用户 ({i+1}/{len(history_to_show)}):[/bold blue]")
+                                console.print(f"\n[bold blue]User ({i//2+1}):[/bold blue]")
                                 console.print(user_msg)
-                                console.print(f"\n[bold green]助手 ({i+1}/{len(history_to_show)}):[/bold green]")
-                                console.print(assistant_msg)
-                        else:
-                            console.print("[yellow]没有历史记录[/yellow]")
-                        
-                        continue
-                    
+                                console.print(f"\n[bold green]Assistant:[/bold green]")
+                                console.print(Markdown(assistant_msg))
+                                console.print("---")
+
                     # 使用指定服务器命令
                     elif cmd.startswith('use '):
                         server_name = query[5:].strip()  # 去掉'!use '，长度为5
@@ -969,53 +1023,72 @@ def chat(
                             
                             continue
                         
+                        # 这是在聊天模式下使用 !connect 命令
+                        console.print(f"[dim]处理聊天模式的connect命令: '{full_cmd}'[/dim]")
+                        
+                        # 检查是否输入了服务器ID
+                        if not full_cmd.strip():
+                            console.print("[bold red]错误:[/bold red] 需要指定服务器ID")
+                            continue
+                        
                         # 处理引号
                         if full_cmd.startswith('"') and full_cmd.endswith('"'):
                             full_cmd = full_cmd[1:-1]
                         elif full_cmd.startswith("'") and full_cmd.endswith("'"):
                             full_cmd = full_cmd[1:-1]
                         
-                        # 检查是否是uvx或npx命令
-                        if full_cmd.startswith('uvx'):
-                            # 如果是uvx命令，将整个命令作为服务器标识符
-                            server_id = full_cmd
-                            server_name = None
-                            
-                            # 检查是否有--name参数
-                            name_pos = full_cmd.find("--name")
-                            if name_pos > 0:
-                                server_id = full_cmd[:name_pos].strip()
-                                name_part = full_cmd[name_pos + 7:].strip()  # 7 = len("--name ")
-                                server_name = name_part
-                        elif full_cmd.startswith('npx'):
-                            # 如果是npx命令，将整个命令作为服务器标识符
-                            server_id = full_cmd
-                            server_name = None
-                            
-                            # 检查是否有--name参数
-                            name_pos = full_cmd.find("--name")
-                            if name_pos > 0:
-                                server_id = full_cmd[:name_pos].strip()
-                                name_part = full_cmd[name_pos + 7:].strip()  # 7 = len("--name ")
-                                server_name = name_part
-                        else:
-                            # 其他情况，使用空格分割
-                            cmd_parts = full_cmd.split(maxsplit=1)
-                            
-                            if not cmd_parts:
-                                console.print("[bold red]错误:[/bold red] 请提供服务器标识符")
-                                continue
-                            
-                            server_id = cmd_parts[0]
-                            server_name = None
-                            
-                            # 如果有第二部分，则作为服务器名称
-                            if len(cmd_parts) > 1:
-                                server_name = cmd_parts[1]
+                        # 默认服务器名称为 None
+                        server_name = None
                         
+                        # 特殊处理常见的MCP服务器命令格式，如 uvx mcp-server-fetch 或 npx package-name
+                        server_id = full_cmd
+                        
+                        # 检查是否有 --name 参数
+                        name_match = re.search(r'\s--name\s+([\w-]+)', full_cmd)
+                        if name_match:
+                            server_name = name_match.group(1)
+                            # 从 server_id 中移除 --name 及其参数
+                            server_id = full_cmd[:name_match.start()].strip()
+                        
+                        # 处理包含环境变量的情况 (如 TAVILY_API_KEY=xxx uvx mcp-server-fetch)
+                        env_vars = {}
+                        env_var_pattern = re.compile(r'^([A-Za-z0-9_]+)=([^\s]+)')  # 匹配环境变量赋值
+                        parts = server_id.split()
+                        clean_parts = []
+                        
+                        for part in parts:
+                            env_match = env_var_pattern.match(part)
+                            if env_match:
+                                env_vars[env_match.group(1)] = env_match.group(2)
+                            else:
+                                clean_parts.append(part)
+                        
+                        # 如果有环境变量，重构server_id为不包含环境变量的命令
+                        if env_vars:
+                            server_id = " ".join(clean_parts)
+                            console.print(f"[dim]检测到环境变量: {list(env_vars.keys())}[/dim]")
+                        
+                        # 根据命令形式自动生成服务器名称
+                        if not server_name and ' ' in server_id:
+                            parts = server_id.split()
+                            if parts[0] in ["uvx", "npx"] and len(parts) > 1:
+                                # 从最后一个参数生成服务器名称
+                                server_name = parts[-1].split('/')[-1]
+                                # 移除版本号 (如 @0.1.4)
+                                server_name = re.sub(r'@[0-9.]+$', '', server_name)
+                        
+                        console.print(f"[dim]将连接到: server_id='{server_id}', server_name='{server_name}'[/dim]")
+
+                        if not server_id:
+                            console.print("[bold red]错误:[/bold red] 无法确定服务器标识符")
+                            continue
+
                         console.print(f"[dim]正在连接到服务器: {server_id}[/dim]")
                         
                         try:
+                            # 添加任何检测到的环境变量
+                            os.environ.update(env_vars)
+                            
                             # 连接到服务器
                             new_server_name = await client.connect_to_server(server_id, server_name)
                             console.print(f"[bold green]成功连接到服务器:[/bold green] {new_server_name}")

@@ -74,6 +74,12 @@ cp config.py.template config.py
   ```
   !connect --from-config <服务器ID>
   ```
+  
+  > **重要提示：** 当前程序只能使用以下两种方式连接服务器：
+  > 1. 使用配置文件方式：`!connect --from-config <服务器ID>`
+  > 2. 使用单个 npx 命令：`!connect npx <参数>`
+  > 
+  > 目前不支持复合命令形式，如 `!connect uvx mcp-server-fetch`。请使用配置文件方式代替。
 
 - **查看配置文件中的服务器**：
   ```bash
@@ -127,6 +133,7 @@ cp config.py.template config.py
 - 确保您已安装所需的 npm 包或其他依赖
 - 检查环境变量是否正确设置
 - 使用 `--keep-alive` 选项保持服务器连接
+- 如果出现“错误: 需要指定服务器ID”，请使用配置文件方式连接（`!connect --from-config <服务器ID>`）
 
 ### API 密钥问题
 
