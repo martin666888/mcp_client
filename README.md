@@ -41,7 +41,7 @@ uv add mcp openai anthropic  #或者其他相关依赖
 
 ### 配置 API
 
-首先，在 `mcpclient.py` 文件中配置您的 API 密钥和相关设置：
+首先，克隆到本地后新建config.py文件用语存放API密钥等信息，例如：
 
 ```python
 # 全局 API 配置
@@ -51,6 +51,8 @@ API_CONFIG = {
     "model": "模型名称"  # 根据您使用的API提供商进行调整
 }
 ```
+
+之后主程序通过import config导入配置信息。
 
 ### 运行客户端
 
